@@ -9,11 +9,31 @@ import json
 import torch
 import torch.nn as nn
 from lora import LoRALayer, LinearWithLoRA, LinearWithDoRA, ProgressiveLoRANet
-import wandb
+# import wandb
 #wandb.init(mode="disabled")           
 NUM_PREPROCESSING_WORKERS = 2
 
+def get_task_kwargs(task):
+    match task:
+        case 'qa':
+            return {}
+        case 'nli':
+            return {'num_labels': 3}
+        case 'cola':
+            return {'num_labels': 2}
+        case _:
+            raise ValueError(f"Invalid Task: {task}")
 
+def get_train_head(model, task):
+    match task:
+        case 'qa':
+            return model.qa_ouputs
+        case 'nli':
+            return model.classifier
+        case 'cola':
+            return model.classifier
+        case _:
+            raise ValueError(f"Invalid Task: {task}")
 
 def main():
 
@@ -42,7 +62,7 @@ def main():
                       help="""This argument specifies the base model to fine-tune.
         This should either be a HuggingFace model ID (see https://huggingface.co/models)
         or a path to a saved model checkpoint (a folder containing config.json and pytorch_model.bin).""")
-    argp.add_argument('--task', type=str, choices=['nli', 'qa'], required=True,
+    argp.add_argument('--task', type=str, choices=['nli', 'qa', 'cola'], required=True,
                       help="""This argument specifies which task to train/evaluate on.
         Pass "nli" for natural language inference or "qa" for question answering.
         By default, "nli" will use the SNLI dataset, and "qa" will use the SQuAD dataset.""")
@@ -67,18 +87,22 @@ def main():
     # Load the raw data
 
     #TODO: load GLUE properly, iterate over all tasks and evaluate over all tasks
-    dataset = datasets.load_dataset('nyu-mll/glue', 'mnli')
+    # dataset = datasets.load_dataset('nyu-mll/glue', 'mnli')
+    dataset = datasets.load_dataset('nyu-mll/glue', args.task)
     
     # TODO: get right labels per task
     # NLI models need to have the output label count specified (label 0 is "entailed", 1 is "neutral", and 2 is "contradiction")
-    task_kwargs = {'num_labels': 3} if args.task == 'nli' else {}
+    task_kwargs = get_task_kwargs(args.task)
 
     # TODO: get right finetuning head for each task
     model_classes = {'qa': AutoModelForQuestionAnswering,
-                     'nli': AutoModelForSequenceClassification}
+                     'nli': AutoModelForSequenceClassification,
+                     'cola': AutoModelForSequenceClassification,}
+    
     model_class = model_classes[args.task]
     # Initialize the model and tokenizer from the specified pretrained model/checkpoint
     model = model_class.from_pretrained(args.model, **task_kwargs)
+    print(model)
     debug = True #TODO: add as argp param
     if args.lora != None:
         # freeze parameters
@@ -120,7 +144,7 @@ def main():
                 layer.intermediate.dense = assign_lora(layer.intermediate.dense)
                 layer.output.dense = assign_lora(layer.output.dense)
         if train_head:
-            for param in model.qa_outputs.parameters():
+            for param in get_train_head(model, args.task).params():
                 param.requires_grad = True
         if debug:
             print(model)
@@ -138,10 +162,13 @@ def main():
     elif args.task == 'nli':
         prepare_train_dataset = prepare_eval_dataset = lambda exs: prepare_dataset_nli(exs, tokenizer, args.max_length)
         # prepare_eval_dataset = prepare_dataset_nli
+    elif args.task == 'cola':
+        prepare_train_dataset = lambda exs: prepare_train_dataset_cola(exs, tokenizer)
     else:
         raise ValueError('Unrecognized task name: {}'.format(args.task))
 
     print("Preprocessing data... (this takes a little bit, should only happen once per dataset)")
+    dataset_id = None
     if dataset_id == ('snli',):
         # remove SNLI examples with no label
         dataset = dataset.filter(lambda ex: ex['label'] != -1)
