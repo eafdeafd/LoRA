@@ -3,14 +3,17 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, \
     AutoModelForQuestionAnswering, Trainer, TrainingArguments, HfArgumentParser
 from helpers import prepare_dataset_nli, prepare_train_dataset_qa, \
     prepare_validation_dataset_qa, QuestionAnsweringTrainer, compute_accuracy, count_parameters
+from dataset_helpers import cola
 import os
 from functools import partial
 import json
 import torch
 import torch.nn as nn
+import evaluate
 from lora import LoRALayer, LinearWithLoRA, LinearWithDoRA, ProgressiveLoRANet
-# import wandb
-#wandb.init(mode="disabled")           
+import wandb
+import numpy as np
+wandb.init(mode="disabled")           
 NUM_PREPROCESSING_WORKERS = 2
 
 def get_task_kwargs(task):
@@ -93,17 +96,16 @@ def main():
     # TODO: get right labels per task
     # NLI models need to have the output label count specified (label 0 is "entailed", 1 is "neutral", and 2 is "contradiction")
     task_kwargs = get_task_kwargs(args.task)
-
     # TODO: get right finetuning head for each task
     model_classes = {'qa': AutoModelForQuestionAnswering,
-                     'nli': AutoModelForSequenceClassification,
+                     'mnli': AutoModelForSequenceClassification,
                      'cola': AutoModelForSequenceClassification,}
     
     model_class = model_classes[args.task]
     # Initialize the model and tokenizer from the specified pretrained model/checkpoint
     model = model_class.from_pretrained(args.model, **task_kwargs)
-    print(model)
-    debug = True #TODO: add as argp param
+    #print(model)
+    debug = False #TODO: add as argp param
     if args.lora != None:
         # freeze parameters
         for param in model.parameters():
@@ -159,11 +161,13 @@ def main():
     if args.task == 'qa':
         prepare_train_dataset = lambda exs: prepare_train_dataset_qa(exs, tokenizer)
         prepare_eval_dataset = lambda exs: prepare_validation_dataset_qa(exs, tokenizer)
-    elif args.task == 'nli':
+    elif args.task == 'mnli':
+        eval_split = 'validation_matched'
         prepare_train_dataset = prepare_eval_dataset = lambda exs: prepare_dataset_nli(exs, tokenizer, args.max_length)
         # prepare_eval_dataset = prepare_dataset_nli
     elif args.task == 'cola':
-        prepare_train_dataset = lambda exs: prepare_train_dataset_cola(exs, tokenizer)
+        prepare_train_dataset = prepare_eval_dataset = lambda exs: cola.prepare_train_dataset_cola(exs, tokenizer, args.max_length)
+        eval_split = 'validation'
     else:
         raise ValueError('Unrecognized task name: {}'.format(args.task))
 
@@ -215,18 +219,19 @@ def main():
         metric = datasets.load_metric('squad')
         compute_metrics = lambda eval_preds: metric.compute(
             predictions=eval_preds.predictions, references=eval_preds.label_ids)
-    elif args.task == 'nli':
+    elif args.task == 'mnli':
         compute_metrics = compute_accuracy
-    
-
+    elif args.task == 'cola':
+        metric = evaluate.load('glue', 'cola') 
+        compute_metrics = lambda eval_preds: metric.compute(predictions=np.argmax(eval_preds.predictions, axis=1), references=eval_preds.label_ids)
     # This function wraps the compute_metrics function, storing the model's predictions
     # so that they can be dumped along with the computed metrics
     eval_predictions = None
     def compute_metrics_and_store_predictions(eval_preds):
         nonlocal eval_predictions
         eval_predictions = eval_preds
-        return compute_metrics(eval_preds)
-    
+        outs = compute_metrics(eval_preds)
+        return outs
 
     # Initialize the Trainer object with the specified arguments and the model and dataset we loaded above
     trainer = trainer_class(
