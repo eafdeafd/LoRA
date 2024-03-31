@@ -144,7 +144,7 @@ def main():
                 layer.intermediate.dense = assign_lora(layer.intermediate.dense)
                 layer.output.dense = assign_lora(layer.output.dense)
         if train_head:
-            for param in get_train_head(model, args.task).params():
+            for param in get_train_head(model, args.task).parameters():
                 param.requires_grad = True
         if debug:
             print(model)
