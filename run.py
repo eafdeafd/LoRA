@@ -13,7 +13,7 @@ import evaluate
 from lora import LoRALayer, LinearWithLoRA, LinearWithDoRA, ProgressiveLoRANet
 import wandb
 import numpy as np
-wandb.init(mode="disabled")           
+#wandb.init(mode="disabled")           
 NUM_PREPROCESSING_WORKERS = 2
 
 def get_task_kwargs(task):
@@ -59,7 +59,7 @@ def main():
     #     *This argument is required*.
 
     # python run.py --dataset nyu-mll/glue --task qa --lora lora --output_dir output
-
+    #python run.py --dataset nyu-mll/glue --task cola --lora lora --output_dir output --do_train --save_steps 500 --save_total_limit 1 --load_best_model_at_end --logging_steps 500 --per_device_train_batch_size 32 --evaluation_strategy steps --per_device_eval_batch_size 32 --num_train_epochs 80 --learning_rate .0004 --warmup_ratio .06 --max_length 128
     argp.add_argument('--model', type=str,
                       default='FacebookAI/roberta-base',
                       help="""This argument specifies the base model to fine-tune.
