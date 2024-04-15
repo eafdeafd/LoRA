@@ -3,7 +3,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, \
     AutoModelForQuestionAnswering, Trainer, TrainingArguments, HfArgumentParser
 from helpers import prepare_dataset_nli, prepare_train_dataset_qa, \
     prepare_validation_dataset_qa, QuestionAnsweringTrainer, compute_accuracy, count_parameters
-from dataset_helpers import cola
+from dataset_helpers import cola, sst, mrpc
 import os
 from functools import partial
 import json
@@ -13,16 +13,20 @@ import evaluate
 from lora import LoRALayer, LinearWithLoRA, LinearWithDoRA, ProgressiveLoRANet
 import wandb
 import numpy as np
-#wandb.init(mode="disabled")           
+# wandb.init(mode="disabled")
 NUM_PREPROCESSING_WORKERS = 2
 
 def get_task_kwargs(task):
     match task:
         case 'qa':
             return {}
-        case 'nli':
+        case 'mnli':
             return {'num_labels': 3}
         case 'cola':
+            return {'num_labels': 2}
+        case 'sst2':
+            return {'num_labels': 2}
+        case 'mrpc':
             return {'num_labels': 2}
         case _:
             raise ValueError(f"Invalid Task: {task}")
@@ -31,9 +35,13 @@ def get_train_head(model, task):
     match task:
         case 'qa':
             return model.qa_ouputs
-        case 'nli':
+        case 'mnli':
             return model.classifier
         case 'cola':
+            return model.classifier
+        case 'sst2':
+            return model.classifier
+        case 'mrpc':
             return model.classifier
         case _:
             raise ValueError(f"Invalid Task: {task}")
@@ -65,7 +73,7 @@ def main():
                       help="""This argument specifies the base model to fine-tune.
         This should either be a HuggingFace model ID (see https://huggingface.co/models)
         or a path to a saved model checkpoint (a folder containing config.json and pytorch_model.bin).""")
-    argp.add_argument('--task', type=str, choices=['nli', 'qa', 'cola'], required=True,
+    argp.add_argument('--task', type=str, choices=['mnli', 'qa', 'cola', 'sst2', 'mrpc'], required=True,
                       help="""This argument specifies which task to train/evaluate on.
         Pass "nli" for natural language inference or "qa" for question answering.
         By default, "nli" will use the SNLI dataset, and "qa" will use the SQuAD dataset.""")
@@ -81,6 +89,21 @@ def main():
     argp.add_argument('--lora', type=str, default=None)
     
     training_args, args = argp.parse_args_into_dataclasses()
+
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="lora",
+
+        # track hyperparameters and run metadata
+        config={
+            "task": args.task,
+            "model": args.lora if args.lora is not None else "Full Fine Tune",
+            "model_dir": training_args.output_dir,
+            "learning_rate": training_args.learning_rate,
+            "epochs": training_args.num_train_epochs,
+            "train_batch_size": training_args.per_device_train_batch_size,
+        }
+    )
 
     # Dataset selection
     #default_datasets = {'qa': ('squad',), 'nli': ('snli',)}
@@ -99,13 +122,15 @@ def main():
     # TODO: get right finetuning head for each task
     model_classes = {'qa': AutoModelForQuestionAnswering,
                      'mnli': AutoModelForSequenceClassification,
-                     'cola': AutoModelForSequenceClassification,}
+                     'cola': AutoModelForSequenceClassification,
+                     'sst2': AutoModelForSequenceClassification,
+                     'mrpc': AutoModelForSequenceClassification}
     
     model_class = model_classes[args.task]
     # Initialize the model and tokenizer from the specified pretrained model/checkpoint
     model = model_class.from_pretrained(args.model, **task_kwargs)
     #print(model)
-    debug = False #TODO: add as argp param
+    debug = True #TODO: add as argp param
     if args.lora != None:
         # freeze parameters
         for param in model.parameters():
@@ -148,11 +173,11 @@ def main():
         if train_head:
             for param in get_train_head(model, args.task).parameters():
                 param.requires_grad = True
-        if debug:
-            print(model)
-            for name, param in model.named_parameters():
-                print(f"{name}: {param.requires_grad}")
-            print("Total number of trainable parameters:", count_parameters(model))
+    if debug:
+        print(model)
+        for name, param in model.named_parameters():
+            print(f"{name}: {param.requires_grad}")
+        print("Total number of trainable parameters:", count_parameters(model))
             
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
 
@@ -166,7 +191,13 @@ def main():
         prepare_train_dataset = prepare_eval_dataset = lambda exs: prepare_dataset_nli(exs, tokenizer, args.max_length)
         # prepare_eval_dataset = prepare_dataset_nli
     elif args.task == 'cola':
-        prepare_train_dataset = prepare_eval_dataset = lambda exs: cola.prepare_train_dataset_cola(exs, tokenizer, args.max_length)
+        prepare_train_dataset = prepare_eval_dataset = lambda exs: cola.prepare_dataset(exs, tokenizer, args.max_length)
+        eval_split = 'validation'
+    elif args.task == 'sst2':
+        prepare_train_dataset = prepare_eval_dataset = lambda exs: sst.prepare_dataset(exs, tokenizer, args.max_length)
+        eval_split = 'validation'
+    elif args.task == 'mrpc':
+        prepare_train_dataset = prepare_eval_dataset = lambda exs: mrpc.prepare_dataset(exs, tokenizer, args.max_length)
         eval_split = 'validation'
     else:
         raise ValueError('Unrecognized task name: {}'.format(args.task))
@@ -223,7 +254,19 @@ def main():
         compute_metrics = compute_accuracy
     elif args.task == 'cola':
         metric = evaluate.load('glue', 'cola') 
-        compute_metrics = lambda eval_preds: metric.compute(predictions=np.argmax(eval_preds.predictions, axis=1), references=eval_preds.label_ids)
+        def compute_metrics(eval_preds):
+            predictions = np.argmax(eval_preds.predictions, axis=1)
+            references = eval_preds.label_ids
+            return metric.compute(predictions=predictions, references=references)
+    elif args.task == 'sst2':
+        compute_metrics = compute_accuracy
+    elif args.task == 'mrpc':
+        metric = evaluate.load('glue', 'mrpc') 
+        def compute_metrics(eval_preds):
+            predictions = np.argmax(eval_preds.predictions, axis=1)
+            references = eval_preds.label_ids
+            return metric.compute(predictions=predictions, references=references)
+        #compute_metrics = lambda eval_preds: metric.compute(predictions=np.argmax(eval_preds.predictions, axis=1), references=eval_preds.label_ids)
     # This function wraps the compute_metrics function, storing the model's predictions
     # so that they can be dumped along with the computed metrics
     eval_predictions = None
@@ -231,6 +274,7 @@ def main():
         nonlocal eval_predictions
         eval_predictions = eval_preds
         outs = compute_metrics(eval_preds)
+        print(outs)
         return outs
 
     # Initialize the Trainer object with the specified arguments and the model and dataset we loaded above

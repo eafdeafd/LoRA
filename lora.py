@@ -1,20 +1,20 @@
 import torch
 import torch.nn as nn
-import torch.functional as F
-
-#class LoRALayer(nn.Module):
-#    def __init__(self, in_dim, out_dim, rank, alpha):
-#        super().__init__()
-#        std_dev = 1 / torch.sqrt(torch.tensor(rank))
-#        self.rank = rank
-#        self.alpha = alpha
-#        self.A = nn.Parameter(torch.randn(in_dim, rank) * std_dev)
-#        self.B = nn.Parameter(torch.zeros(rank, out_dim))
-#    
-#    def forward(self, x):
-#        return self.alpha * (x @ self.A @ self.B)
+import torch.nn.functional as F
 
 class LoRALayer(nn.Module):
+   def __init__(self, in_dim, out_dim, rank, alpha):
+       super().__init__()
+       std_dev = 1 / torch.sqrt(torch.tensor(rank))
+       self.rank = rank
+       self.alpha = alpha
+       self.A = nn.Parameter(torch.randn(in_dim, rank) * std_dev)
+       self.B = nn.Parameter(torch.zeros(rank, out_dim))
+   
+   def forward(self, x):
+       return self.alpha * (x @ self.A @ self.B)
+
+class SeqLoRALayer(nn.Module):
     # the same as lora, just conceptually nicer imo, can also add bias
     def __init__(self, in_dim, out_dim, rank, alpha):
         super().__init__()
