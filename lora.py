@@ -29,7 +29,36 @@ class SeqLoRALayer(nn.Module):
     
     def forward(self, x):
         return self.alpha * self.seq(x)
-    
+
+class LoRAFALayer(nn.Module):
+   # freeze A matrix, maybe play with normal dist init
+   def __init__(self, in_dim, out_dim, rank, alpha):
+       super().__init__()
+       std_dev = 1 / torch.sqrt(torch.tensor(rank))
+       self.rank = rank
+       self.alpha = alpha
+       self.A = nn.Parameter(torch.randn(in_dim, rank) * std_dev)
+       self.A.requires_grad = False
+       self.B = nn.Parameter(torch.zeros(rank, out_dim))
+   
+   def forward(self, x):
+       return self.alpha * (x @ self.A @ self.B)
+
+# TODO: implement this
+class VeRA(nn.Module):
+   # freeze A, B and add trainable d,b vectors
+   def __init__(self, in_dim, out_dim, rank, alpha):
+       super().__init__()
+       std_dev = 1 / torch.sqrt(torch.tensor(rank))
+       self.rank = rank
+       self.alpha = alpha
+       self.A = nn.Parameter(torch.randn(in_dim, rank) * std_dev)
+       self.A.requires_grad = False
+       self.B = nn.Parameter(torch.zeros(rank, out_dim))
+   
+   def forward(self, x):
+       return self.alpha * (x @ self.A @ self.B)
+
 class LinearWithLoRA(torch.nn.Module):
     # wrapper around Linear Layers for normal LoRA
     def __init__(self, linear, rank, alpha):
