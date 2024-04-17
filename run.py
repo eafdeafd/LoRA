@@ -10,7 +10,7 @@ import json
 import torch
 import torch.nn as nn
 import evaluate
-from lora import LoRALayer, LinearWithLoRA, LinearWithDoRA, ProgressiveLoRANet
+from lora import LoRALayer, LinearWithLoRA, LinearWithDoRA, ProgressiveLoRANet, LoRAFALayer, VeRA
 import wandb
 import numpy as np
 # wandb.init(mode="disabled")
@@ -163,9 +163,13 @@ def main():
         train_head = True
 
         if args.lora == 'lora':
-            assign_lora = partial(LinearWithLoRA, rank=lora_r, alpha=lora_alpha)
+            assign_lora = partial(LinearWithLoRA, rank=lora_r, alpha=lora_alpha, lora=LoRALayer)
         elif args.lora == 'dora':
             assign_lora = partial(LinearWithDoRA, rank=lora_r, alpha=lora_alpha)
+        elif args.lora == 'lorafa':
+            assign_lora = partial(LinearWithLoRA, rank=lora_r, alpha=lora_alpha, lora=LoRAFALayer)
+        elif args.lora == 'vera':
+            assign_lora = partial(LinearWithLoRA, rank=lora_r, alpha=lora_alpha, lora=VeRA)
         elif args.lora == 'progressive':
             # TODO: add progressive net lora
             raise NotImplementedError
