@@ -3,7 +3,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, \
     AutoModelForQuestionAnswering, Trainer, TrainingArguments, HfArgumentParser
 from helpers import prepare_dataset_nli, prepare_train_dataset_qa, \
     prepare_validation_dataset_qa, QuestionAnsweringTrainer, compute_accuracy, count_parameters
-from dataset_helpers import cola, sst, mrpc
+from dataset_helpers import cola, sst, mrpc, qqp, rte, stsb
 import os
 from functools import partial
 import json
@@ -28,6 +28,12 @@ def get_task_kwargs(task):
             return {'num_labels': 2}
         case 'mrpc':
             return {'num_labels': 2}
+        case 'qqp':
+            return {'num_labels': 2}
+        case 'rte':
+            return {'num_labels': 2}
+        case 'stsb':
+            return {'num_labels': 1, 'problem_type': 'regression'}
         case _:
             raise ValueError(f"Invalid Task: {task}")
 
@@ -42,6 +48,12 @@ def get_train_head(model, task):
         case 'sst2':
             return model.classifier
         case 'mrpc':
+            return model.classifier
+        case 'qqp':
+            return model.classifier
+        case 'rte':
+            return model.classifier
+        case 'stsb':
             return model.classifier
         case _:
             raise ValueError(f"Invalid Task: {task}")
@@ -73,7 +85,7 @@ def main():
                       help="""This argument specifies the base model to fine-tune.
         This should either be a HuggingFace model ID (see https://huggingface.co/models)
         or a path to a saved model checkpoint (a folder containing config.json and pytorch_model.bin).""")
-    argp.add_argument('--task', type=str, choices=['mnli', 'qa', 'cola', 'sst2', 'mrpc'], required=True,
+    argp.add_argument('--task', type=str, choices=['mnli', 'qa', 'cola', 'sst2', 'mrpc', 'qqp', 'rte', 'stsb'], required=True,
                       help="""This argument specifies which task to train/evaluate on.
         Pass "nli" for natural language inference or "qa" for question answering.
         By default, "nli" will use the SNLI dataset, and "qa" will use the SQuAD dataset.""")
@@ -124,7 +136,10 @@ def main():
                      'mnli': AutoModelForSequenceClassification,
                      'cola': AutoModelForSequenceClassification,
                      'sst2': AutoModelForSequenceClassification,
-                     'mrpc': AutoModelForSequenceClassification}
+                     'mrpc': AutoModelForSequenceClassification,
+                     'qqp':AutoModelForSequenceClassification,
+                     'rte':AutoModelForSequenceClassification,
+                     'stsb':AutoModelForSequenceClassification}
     
     model_class = model_classes[args.task]
     # Initialize the model and tokenizer from the specified pretrained model/checkpoint
@@ -199,6 +214,16 @@ def main():
     elif args.task == 'mrpc':
         prepare_train_dataset = prepare_eval_dataset = lambda exs: mrpc.prepare_dataset(exs, tokenizer, args.max_length)
         eval_split = 'validation'
+    elif args.task == 'rte':
+        prepare_train_dataset = prepare_eval_dataset = lambda exs: rte.prepare_dataset(exs, tokenizer, args.max_length)
+        eval_split = 'validation'
+    elif args.task == 'qqp':
+        prepare_train_dataset = prepare_eval_dataset = lambda exs: qqp.prepare_dataset(exs, tokenizer, args.max_length)
+        eval_split = 'validation'
+    elif args.task == 'stsb':
+        prepare_train_dataset = prepare_eval_dataset = lambda exs: stsb.prepare_dataset(exs, tokenizer, args.max_length)
+        eval_split = 'validation'
+    
     else:
         raise ValueError('Unrecognized task name: {}'.format(args.task))
 
@@ -264,6 +289,16 @@ def main():
         metric = evaluate.load('glue', 'mrpc') 
         def compute_metrics(eval_preds):
             predictions = np.argmax(eval_preds.predictions, axis=1)
+            references = eval_preds.label_ids
+            return metric.compute(predictions=predictions, references=references)
+    elif args.task == 'qqp':
+        compute_metrics = compute_accuracy # could also be F1
+    elif args.task == 'rte':
+        compute_metrics = compute_accuracy
+    elif args.task == 'stsb':
+        metric = evaluate.load('glue', 'stsb') 
+        def compute_metrics(eval_preds):
+            predictions = eval_preds.predictions.flatten()
             references = eval_preds.label_ids
             return metric.compute(predictions=predictions, references=references)
         #compute_metrics = lambda eval_preds: metric.compute(predictions=np.argmax(eval_preds.predictions, axis=1), references=eval_preds.label_ids)
