@@ -13,7 +13,7 @@ import evaluate
 from lora import LoRALayer, LinearWithLoRA, LinearWithDoRA, ProgressiveLoRANet, LoRAFALayer, VeRA
 import wandb
 import numpy as np
-# wandb.init(mode="disabled")
+#wandb.init(mode="disabled")
 NUM_PREPROCESSING_WORKERS = 2
 
 def get_task_kwargs(task):
@@ -99,13 +99,14 @@ def main():
     argp.add_argument('--max_eval_samples', type=int, default=None,
                       help='Limit the number of examples to evaluate on.')
     argp.add_argument('--lora', type=str, default=None)
-    
+    argp.add_argument('--test', type=str, default=None)
+
     training_args, args = argp.parse_args_into_dataclasses()
 
     wandb.init(
         # set the wandb project where this run will be logged
         project="lora",
-        name=f"{"ft" if args.lora is None else args.lora}-{args.task}-{args.epochs}-{args.learning_rate}",
+        name=f"{'ft' if args.lora is None else args.lora}-{args.task}-{training_args.num_train_epochs}-{training_args.learning_rate}",
 
         # track hyperparameters and run metadata
         config={
@@ -202,7 +203,6 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
 
     # Select the dataset preprocessing function (these functions are defined in helpers.py)
-    #TODO: make this work for all GLUE tasks
     if args.task == 'qa':
         prepare_train_dataset = lambda exs: prepare_train_dataset_qa(exs, tokenizer)
         prepare_eval_dataset = lambda exs: prepare_validation_dataset_qa(exs, tokenizer)
@@ -228,10 +228,11 @@ def main():
     elif args.task == 'stsb':
         prepare_train_dataset = prepare_eval_dataset = lambda exs: stsb.prepare_dataset(exs, tokenizer, args.max_length)
         eval_split = 'validation'
-    
     else:
         raise ValueError('Unrecognized task name: {}'.format(args.task))
-
+    if args.test != None:
+        eval_split = 'test'
+        print("Using test split, make sure you are ONLY evaluating")
     print("Preprocessing data... (this takes a little bit, should only happen once per dataset)")
     dataset_id = None
     if dataset_id == ('snli',):
@@ -331,7 +332,7 @@ def main():
     if training_args.do_train:
         trainer.train()
         trainer.save_model()
-        
+
 
     if training_args.do_eval:
         results = trainer.evaluate(**eval_kwargs)

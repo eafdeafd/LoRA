@@ -55,10 +55,10 @@ class VeRA(nn.Module):
        B = torch.empty(rank, out_dim)
        nn.init.kaiming_uniform_(B, mode='fan_in', nonlinearity='relu')
        self.B = nn.Parameter(B, requires_grad=False)
-       self.b = nn.Parameter(torch.zeros(out_dim, 1))
-       self.d = nn.Parameter(torch.ones(1, rank) * d_init)
+       self.b = nn.Parameter(torch.zeros(out_dim))
+       self.d = nn.Parameter(torch.ones(rank) * d_init)
    def forward(self, x):
-       return self.alpha * (x @ self.A * self.d @ self.B * self.b)
+       return self.alpha * ((((x @ self.A) * self.d) @ self.B) * self.b)
 
 class LinearWithLoRA(torch.nn.Module):
     # wrapper around Linear Layers for normal LoRA

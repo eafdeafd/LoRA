@@ -2,3 +2,5 @@ __pycache__/*
 wandb/
 output*
 *__pycache__*
+sweep*
+debug/
