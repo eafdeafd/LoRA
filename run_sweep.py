@@ -16,6 +16,31 @@ import numpy as np
 # wandb.init(mode="disabled")
 NUM_PREPROCESSING_WORKERS = 2
 
+sweep_config = {
+    'method': 'random'
+}
+
+parameters_dict = {
+    'epochs': {
+        'values': [80]
+    },
+    'learning_rate': {
+        'distribution': 'log_uniform_values',
+        'min': 0.0000005,
+        'max': 0.00008
+    },
+    'lora_r': {
+        'values': [4, 8, 16, 32]
+    },
+    'lora_alpha': {
+        'values': [4, 8, 16, 32]
+    }
+}
+
+sweep_config["parameters"] = parameters_dict
+
+sweep_id = wandb.sweep(sweep_config, project="lora")
+
 def get_task_kwargs(task):
     match task:
         case 'qa':
@@ -45,6 +70,95 @@ def get_train_head(model, task):
             return model.classifier
         case _:
             raise ValueError(f"Invalid Task: {task}")
+
+def get_train(trainer, args):
+    def train(config=None):
+        with wandb.init(config=config):
+            config = wandb.config
+
+            # TODO: get right labels per task
+            # NLI models need to have the output label count specified (label 0 is "entailed", 1 is "neutral", and 2 is "contradiction")
+            task_kwargs = get_task_kwargs(args.task)
+            # TODO: get right finetuning head for each task
+            model_classes = {'qa': AutoModelForQuestionAnswering,
+                            'mnli': AutoModelForSequenceClassification,
+                            'cola': AutoModelForSequenceClassification,
+                            'sst2': AutoModelForSequenceClassification,
+                            'mrpc': AutoModelForSequenceClassification}
+            
+            model_class = model_classes[args.task]
+            # Initialize the model and tokenizer from the specified pretrained model/checkpoint
+            model = model_class.from_pretrained(args.model, **task_kwargs)
+            #print(model)
+            debug = True #TODO: add as argp param
+            if args.lora != None:
+                # freeze parameters
+                for param in model.parameters():
+                    param.requires_grad = False
+
+                # Experimental setup in LoRA original paper: notice, only query and values are lora'd
+                lora_r = config.lora_r
+                lora_alpha = config.lora_alpha
+                lora_dropout = 0.05
+                lora_query = True
+                lora_key = False
+                lora_value = True
+                lora_projection = False
+                lora_mlp = False
+                train_head = True
+
+                if args.lora == 'lora':
+                    assign_lora = partial(LinearWithLoRA, rank=lora_r, alpha=lora_alpha)
+                elif args.lora == 'dora':
+                    assign_lora = partial(LinearWithDoRA, rank=lora_r, alpha=lora_alpha)
+                elif args.lora == 'progressive':
+                    # TODO: add progressive net lora
+                    raise NotImplementedError
+                else:
+                    raise ValueError("no lora type found!")
+                
+                # WARNING: this will break for other models, it is hardcoded.
+                for layer in model.roberta.encoder.layer:
+                    if lora_query:
+                        layer.attention.self.query = assign_lora(layer.attention.self.query)
+                    if lora_key:
+                        layer.attention.self.key = assign_lora(layer.attention.self.key)
+                    if lora_value:
+                        layer.attention.self.value = assign_lora(layer.attention.self.value)
+                    if lora_projection:
+                        layer.attention.output.dense = assign_lora(layer.attention.output.dense)
+                    if lora_mlp:
+                        layer.intermediate.dense = assign_lora(layer.intermediate.dense)
+                        layer.output.dense = assign_lora(layer.output.dense)
+                if train_head:
+                    for param in get_train_head(model, args.task).parameters():
+                        param.requires_grad = True
+            if debug:
+                print(model)
+                for name, param in model.named_parameters():
+                    print(f"{name}: {param.requires_grad}")
+                print("Total number of trainable parameters:", count_parameters(model))
+
+            training_args = TrainingArguments(
+                output_dir="sweeps",
+                report_to="wandb",
+                num_train_epochs=config.epochs,
+                learning_rate=config.learning_rate,
+                per_device_train_batch_size=32,
+                per_device_eval_batch_size=64,
+                save_strategy="epoch",
+                evaluation_strategy="epoch",
+                logging_strategy="epoch",
+                load_best_model_at_end=True,
+                remove_unused_columns=False,
+                save_total_limit=10,
+            )
+
+            full_trainer = trainer(model=model, args=training_args)
+            full_trainer.train()
+
+
+    return train
 
 def main():
 
@@ -90,95 +204,10 @@ def main():
     
     training_args, args = argp.parse_args_into_dataclasses()
 
-    wandb.init(
-        # set the wandb project where this run will be logged
-        project="lora",
-        name=f"{"ft" if args.lora is None else args.lora}-{args.task}-{args.epochs}-{args.learning_rate}",
-
-        # track hyperparameters and run metadata
-        config={
-            "task": args.task,
-            "model": args.lora if args.lora is not None else "Full Fine Tune",
-            "model_dir": training_args.output_dir,
-            "learning_rate": training_args.learning_rate,
-            "epochs": training_args.num_train_epochs,
-            "train_batch_size": training_args.per_device_train_batch_size,
-        }
-    )
-
-    # Dataset selection
-    #default_datasets = {'qa': ('squad',), 'nli': ('snli',)}
-    #dataset_id = tuple(args.dataset.split(':')) if args.dataset is not None else default_datasets[args.task]
-    # MNLI has two validation splits (one with matched domains and one with mismatched domains). Most datasets just have one "validation" split
-    #eval_split = 'validation_matched' if dataset_id == ('glue', 'mnli') else 'validation'
-    # Load the raw data
-
     #TODO: load GLUE properly, iterate over all tasks and evaluate over all tasks
     # dataset = datasets.load_dataset('nyu-mll/glue', 'mnli')
     dataset = datasets.load_dataset('nyu-mll/glue', args.task)
     
-    # TODO: get right labels per task
-    # NLI models need to have the output label count specified (label 0 is "entailed", 1 is "neutral", and 2 is "contradiction")
-    task_kwargs = get_task_kwargs(args.task)
-    # TODO: get right finetuning head for each task
-    model_classes = {'qa': AutoModelForQuestionAnswering,
-                     'mnli': AutoModelForSequenceClassification,
-                     'cola': AutoModelForSequenceClassification,
-                     'sst2': AutoModelForSequenceClassification,
-                     'mrpc': AutoModelForSequenceClassification}
-    
-    model_class = model_classes[args.task]
-    # Initialize the model and tokenizer from the specified pretrained model/checkpoint
-    model = model_class.from_pretrained(args.model, **task_kwargs)
-    #print(model)
-    debug = True #TODO: add as argp param
-    if args.lora != None:
-        # freeze parameters
-        for param in model.parameters():
-            param.requires_grad = False
-
-        # Experimental setup in LoRA original paper: notice, only query and values are lora'd
-        lora_r = 8
-        lora_alpha = 8
-        lora_dropout = 0.05
-        lora_query = True
-        lora_key = False
-        lora_value = True
-        lora_projection = False
-        lora_mlp = False
-        train_head = True
-
-        if args.lora == 'lora':
-            assign_lora = partial(LinearWithLoRA, rank=lora_r, alpha=lora_alpha)
-        elif args.lora == 'dora':
-            assign_lora = partial(LinearWithDoRA, rank=lora_r, alpha=lora_alpha)
-        elif args.lora == 'progressive':
-            # TODO: add progressive net lora
-            raise NotImplementedError
-        else:
-            raise ValueError("no lora type found!")
-        
-        # WARNING: this will break for other models, it is hardcoded.
-        for layer in model.roberta.encoder.layer:
-            if lora_query:
-                layer.attention.self.query = assign_lora(layer.attention.self.query)
-            if lora_key:
-                layer.attention.self.key = assign_lora(layer.attention.self.key)
-            if lora_value:
-                layer.attention.self.value = assign_lora(layer.attention.self.value)
-            if lora_projection:
-                layer.attention.output.dense = assign_lora(layer.attention.output.dense)
-            if lora_mlp:
-                layer.intermediate.dense = assign_lora(layer.intermediate.dense)
-                layer.output.dense = assign_lora(layer.output.dense)
-        if train_head:
-            for param in get_train_head(model, args.task).parameters():
-                param.requires_grad = True
-    if debug:
-        print(model)
-        for name, param in model.named_parameters():
-            print(f"{name}: {param.requires_grad}")
-        print("Total number of trainable parameters:", count_parameters(model))
             
     tokenizer = AutoTokenizer.from_pretrained(args.model, use_fast=True)
 
@@ -279,47 +308,51 @@ def main():
         return outs
 
     # Initialize the Trainer object with the specified arguments and the model and dataset we loaded above
-    trainer = trainer_class(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset_featurized,
-        eval_dataset=eval_dataset_featurized,
-        tokenizer=tokenizer,
-        compute_metrics=compute_metrics_and_store_predictions,
-    )
+    trainer = partial(trainer_class, train_dataset=train_dataset_featurized, eval_dataset=eval_dataset_featurized, tokenizer=tokenizer, compute_metrics=compute_metrics_and_store_predictions)
+    train = get_train(trainer, args)
+    wandb.agent(sweep_id, train, count=8)
+
+    # trainer = trainer_class(
+    #     model=model,
+    #     args=training_args,
+    #     train_dataset=train_dataset_featurized,
+    #     eval_dataset=eval_dataset_featurized,
+    #     tokenizer=tokenizer,
+    #     compute_metrics=compute_metrics_and_store_predictions,
+    # )
 
     # Train and/or evaluate
-    if training_args.do_train:
-        trainer.train()
-        trainer.save_model()
+    # if training_args.do_train:
+    #     trainer.train()
+    #     trainer.save_model()
         
 
-    if training_args.do_eval:
-        results = trainer.evaluate(**eval_kwargs)
+    # if training_args.do_eval:
+    #     results = trainer.evaluate(**eval_kwargs)
 
-        print('Evaluation results:')
-        print(results)
+    #     print('Evaluation results:')
+    #     print(results)
 
-        os.makedirs(training_args.output_dir, exist_ok=True)
+    #     os.makedirs(training_args.output_dir, exist_ok=True)
 
-        with open(os.path.join(training_args.output_dir, 'eval_metrics.json'), encoding='utf-8', mode='w') as f:
-            json.dump(results, f)
+    #     with open(os.path.join(training_args.output_dir, 'eval_metrics.json'), encoding='utf-8', mode='w') as f:
+    #         json.dump(results, f)
 
-        with open(os.path.join(training_args.output_dir, 'eval_predictions.jsonl'), encoding='utf-8', mode='w') as f:
-            if args.task == 'qa':
-                predictions_by_id = {pred['id']: pred['prediction_text'] for pred in eval_predictions.predictions}
-                for example in eval_dataset:
-                    example_with_prediction = dict(example)
-                    example_with_prediction['predicted_answer'] = predictions_by_id[example['id']]
-                    f.write(json.dumps(example_with_prediction))
-                    f.write('\n')
-            else:
-                for i, example in enumerate(eval_dataset):
-                    example_with_prediction = dict(example)
-                    example_with_prediction['predicted_scores'] = eval_predictions.predictions[i].tolist()
-                    example_with_prediction['predicted_label'] = int(eval_predictions.predictions[i].argmax())
-                    f.write(json.dumps(example_with_prediction))
-                    f.write('\n')
+    #     with open(os.path.join(training_args.output_dir, 'eval_predictions.jsonl'), encoding='utf-8', mode='w') as f:
+    #         if args.task == 'qa':
+    #             predictions_by_id = {pred['id']: pred['prediction_text'] for pred in eval_predictions.predictions}
+    #             for example in eval_dataset:
+    #                 example_with_prediction = dict(example)
+    #                 example_with_prediction['predicted_answer'] = predictions_by_id[example['id']]
+    #                 f.write(json.dumps(example_with_prediction))
+    #                 f.write('\n')
+    #         else:
+    #             for i, example in enumerate(eval_dataset):
+    #                 example_with_prediction = dict(example)
+    #                 example_with_prediction['predicted_scores'] = eval_predictions.predictions[i].tolist()
+    #                 example_with_prediction['predicted_label'] = int(eval_predictions.predictions[i].argmax())
+    #                 f.write(json.dumps(example_with_prediction))
+    #                 f.write('\n')
 
 
 if __name__ == "__main__":
