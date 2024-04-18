@@ -29,13 +29,43 @@ class SeqLoRALayer(nn.Module):
     
     def forward(self, x):
         return self.alpha * self.seq(x)
-    
+
+class LoRAFALayer(nn.Module):
+   # freeze A matrix, maybe play with normal dist init
+   def __init__(self, in_dim, out_dim, rank, alpha):
+       super().__init__()
+       std_dev = 1 / torch.sqrt(torch.tensor(rank))
+       self.rank = rank
+       self.alpha = alpha
+       self.A = nn.Parameter(torch.randn(in_dim, rank) * std_dev, requires_grad=False)
+       self.B = nn.Parameter(torch.zeros(rank, out_dim))
+   
+   def forward(self, x):
+       return self.alpha * (x @ self.A @ self.B)
+
+class VeRA(nn.Module):
+   # freeze A, B and add trainable d,b vectors, important: we use unique frozen matrices instead of shared which is technically incorrect
+   def __init__(self, in_dim, out_dim, rank, alpha, d_init=1e-7):
+       super().__init__()
+       self.rank = rank
+       self.alpha = alpha
+       A = torch.empty(in_dim, rank)
+       nn.init.kaiming_uniform_(A, mode='fan_in', nonlinearity='relu')
+       self.A = nn.Parameter(A, requires_grad=False)
+       B = torch.empty(rank, out_dim)
+       nn.init.kaiming_uniform_(B, mode='fan_in', nonlinearity='relu')
+       self.B = nn.Parameter(B, requires_grad=False)
+       self.b = nn.Parameter(torch.zeros(out_dim, 1))
+       self.d = nn.Parameter(torch.ones(1, rank) * d_init)
+   def forward(self, x):
+       return self.alpha * (x @ self.A * self.d @ self.B * self.b)
+
 class LinearWithLoRA(torch.nn.Module):
     # wrapper around Linear Layers for normal LoRA
-    def __init__(self, linear, rank, alpha):
+    def __init__(self, linear, rank, alpha, lora):
         super().__init__()
         self.linear = linear
-        self.lora = LoRALayer(
+        self.lora = lora(
             linear.in_features, linear.out_features, rank, alpha
         )
 
