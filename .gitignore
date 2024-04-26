@@ -4,3 +4,4 @@ output*
 *__pycache__*
 sweep*
 debug/
+task_lora_sweep

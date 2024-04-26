@@ -59,6 +59,16 @@ class VeRA(nn.Module):
        self.d = nn.Parameter(torch.ones(rank) * d_init)
    def forward(self, x):
        return self.alpha * ((((x @ self.A) * self.d) @ self.B) * self.b)
+   
+class FiLMA(nn.Module):
+    def __init__(self, in_dim, out_dim, rank, alpha, d_init=1e-7):
+        super().__init__()
+        self.alpha = alpha
+        self.linear = nn.Linear(in_dim, 2)
+
+    def forward(self, x):
+        mb = self.linear(x)
+        return self.alpha * (mb[:, :, :1] * x + mb[:, :, 1:])
 
 class LinearWithLoRA(torch.nn.Module):
     # wrapper around Linear Layers for normal LoRA
